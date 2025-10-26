@@ -122,7 +122,7 @@ class InstaReelBot:
                 result = subprocess.run([
                     'ffmpeg', '-ss', str(timestamp), '-i', video_file,
                     '-vframes', '1', '-q:v', '2', thumbnail_file, '-y'
-                ], capture_output=True, stderr=subprocess.DEVNULL, timeout=10)
+                ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
                 
                 if result.returncode == 0 and os.path.exists(thumbnail_file):
                     thumbnails.append(thumbnail_file)

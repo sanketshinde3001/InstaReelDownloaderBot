@@ -6,10 +6,14 @@ WORKDIR /app
 # Install system dependencies including FFmpeg and tools needed for Render
 RUN apt-get update && apt-get install -y \
     ffmpeg \
+    ffprobe \
     curl \
     ca-certificates \
+    wget \
     && rm -rf /var/lib/apt/lists/* \
-    && apt-get clean
+    && apt-get clean \
+    && ffmpeg -version \
+    && ffprobe -version
 
 # Copy requirements first for better Docker layer caching
 COPY requirements.txt .
