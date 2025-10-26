@@ -64,9 +64,29 @@ class InstaReelBot:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(url, download=True)
                 
+                # Try to get the most accurate username from multiple fields
+                username = 'Unknown'
+                
+                # Try different fields in order of preference
+                for field in ['uploader_id', 'uploader', 'channel', 'creator']:
+                    if info.get(field):
+                        username = info.get(field)
+                        break
+                
+                # Clean up username - ensure it starts with @ and has no spaces
+                if username != 'Unknown':
+                    # Remove @ if it already exists to avoid double @@
+                    username = username.lstrip('@')
+                    # Replace spaces with underscores to maintain Instagram format
+                    username = username.replace(' ', '_')
+                    # Ensure it doesn't have any other problematic characters
+                    username = re.sub(r'[^a-zA-Z0-9._]', '', username)
+                
+                logger.info(f"Extracted username: {username} from fields: {[info.get(f) for f in ['uploader_id', 'uploader', 'channel', 'creator']]}")
+                
                 return {
                     'video_file': f"{info['id']}.{info['ext']}",
-                    'username': info.get('uploader', 'Unknown'),
+                    'username': username,
                     'caption': info.get('description', 'No caption'),
                     'likes': info.get('like_count', 0),
                     'shortcode': info['id']
@@ -213,33 +233,33 @@ class InstaReelBot:
     async def cookies_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /cookies command"""
         help_text = """
-🍪 **Cookie Authentication Setup**
+**Cookie Authentication Setup**
 
 To bypass Instagram rate limits, you need to provide your browser cookies:
 
 **How to get cookies.txt:**
 
-1️⃣ **Chrome/Edge:**
+1**Chrome/Edge:**
    • Install "Get cookies.txt LOCALLY" extension
    • Go to instagram.com and login
    • Click the extension → Export → instagram.com
    • Save as `cookies.txt`
 
-2️⃣ **Firefox:**
+2️**Firefox:**
    • Install "cookies.txt" add-on
    • Visit instagram.com (logged in)
    • Click add-on → Export cookies.txt
 
-3️⃣ **Manual Method:**
+3️**Manual Method:**
    • Open Developer Tools (F12)
    • Go to Application/Storage → Cookies → instagram.com
    • Copy all cookie data
 
 **Then send the cookies.txt file to this chat!**
 
-⚠️ **Important:** Only share cookies with trusted bots. Cookies contain login information.
+**Important:** Only share cookies with trusted bots. Cookies contain login information.
 
-📤 **Send your cookies.txt file now, or use /start to go back**
+**Send your cookies.txt file now, or use /start to go back**
 """
         await update.message.reply_text(help_text, parse_mode='Markdown')
     
@@ -252,7 +272,7 @@ To bypass Instagram rate limits, you need to provide your browser cookies:
             # Check if it's likely a cookies file
             if document.file_name and ('cookie' in document.file_name.lower() or document.file_name.endswith('.txt')):
                 
-                processing_msg = await update.message.reply_text("🍪 Processing your cookies file...")
+                processing_msg = await update.message.reply_text("Processing your cookies file...")
                 
                 # Download the file
                 file = await context.bot.get_file(document.file_id)
@@ -266,17 +286,17 @@ To bypass Instagram rate limits, you need to provide your browser cookies:
                     
                     if cookies_file:
                         await processing_msg.edit_text(
-                            "✅ **Cookies successfully uploaded and validated!**\n\n"
-                            "🎉 Your Instagram downloads should now work without rate limits!\n"
-                            "🔒 Cookies are stored securely and only used for your downloads.\n\n"
+                            "**Cookies successfully uploaded and validated!**\n\n"
+                            " Your Instagram downloads should now work without rate limits!\n"
+                            "Cookies are stored securely and only used for your downloads.\n\n"
                             "Try downloading a reel now: `/reel [instagram_url]`",
                             parse_mode='Markdown'
                         )
                     else:
-                        await processing_msg.edit_text("❌ Error saving cookies. Please try again.")
+                        await processing_msg.edit_text(" Error saving cookies. Please try again.")
                 else:
                     await processing_msg.edit_text(
-                        "❌ **Invalid cookies file!**\n\n"
+                        " **Invalid cookies file!**\n\n"
                         "Please make sure:\n"
                         "• File contains Instagram cookies\n"
                         "• You're logged into Instagram when exporting\n"
@@ -285,14 +305,14 @@ To bypass Instagram rate limits, you need to provide your browser cookies:
                     )
             else:
                 await update.message.reply_text(
-                    "📄 Please send a cookies.txt file.\n"
+                    "Please send a cookies.txt file.\n"
                     "Use `/cookies` for instructions on how to get your cookies."
                 )
                 
         except Exception as e:
             logger.error(f"Error handling document: {str(e)}")
             await update.message.reply_text(
-                "❌ Error processing file. Please make sure it's a valid text file and try again."
+                " Error processing file. Please make sure it's a valid text file and try again."
             )
     
     async def cookie_status_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -301,44 +321,44 @@ To bypass Instagram rate limits, you need to provide your browser cookies:
         
         if user_id in self.user_cookies and os.path.exists(self.user_cookies[user_id]):
             await update.message.reply_text(
-                "✅ **Cookies Active**\n\n"
-                "🍪 Your authentication cookies are loaded and working.\n"
-                "🚀 You can download Instagram content without rate limits!\n\n"
+                "**Cookies Active**\n\n"
+                "Your authentication cookies are loaded and working.\n"
+                "You can download Instagram content without rate limits!\n\n"
                 "To update cookies, just send a new cookies.txt file.",
                 parse_mode='Markdown'
             )
         else:
             await update.message.reply_text(
-                "❌ **No Cookies Found**\n\n"
+                " **No Cookies Found**\n\n"
                 "You haven't uploaded authentication cookies yet.\n\n"
-                "🍪 Use `/cookies` to setup authentication and avoid rate limits.",
+                "Use `/cookies` to setup authentication and avoid rate limits.",
                 parse_mode='Markdown'
             )
     
     async def start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /start command"""
         welcome_message = """
-🤖 **Instagram Reel Downloader Bot**
+**Instagram Reel Downloader Bot**
 
 📌 **How to use:**
 Send me an Instagram Reel link:
 `/reel https://www.instagram.com/reel/xxxxx/`
 
-✨ **I will send you:**
+**I will send you:**
 • Account username  
 • Full caption
 • High quality video
 • 5 random thumbnails
 
-🍪 **Important for unlimited downloads:**
+**Important for unlimited downloads:**
 Use `/cookies` to setup authentication and avoid rate limits!
 
-📋 **Commands:**
+**Commands:**
 • `/reel [url]` - Download Instagram reel
 • `/cookies` - Setup authentication cookies
 • `/help` - Show detailed help
 
-🚀 **Ready to download!**
+**Ready to download!**
 """
         await update.message.reply_text(welcome_message, parse_mode='Markdown')
     
@@ -350,7 +370,7 @@ Use `/cookies` to setup authentication and avoid rate limits!
         try:
             if not context.args:
                 await update.message.reply_text(
-                    "❌ Please provide an Instagram Reel URL!\n\n"
+                    " Please provide an Instagram Reel URL!\n\n"
                     "Usage: `/reel https://www.instagram.com/reel/xxxxx/`",
                     parse_mode='Markdown'
                 )
@@ -359,7 +379,7 @@ Use `/cookies` to setup authentication and avoid rate limits!
             url = context.args[0]
             
             if 'instagram.com' not in url:
-                await update.message.reply_text("❌ Please provide a valid Instagram URL.")
+                await update.message.reply_text(" Please provide a valid Instagram URL.")
                 return
             
             processing_msg = await update.message.reply_text("⏳ Processing your reel... This may take a moment.")
@@ -372,15 +392,15 @@ Use `/cookies` to setup authentication and avoid rate limits!
                 # Check if user has cookies
                 if user_id not in self.user_cookies:
                     await processing_msg.edit_text(
-                        "❌ **Download Failed - Authentication Required**\n\n"
+                        " **Download Failed - Authentication Required**\n\n"
                         "Instagram requires login cookies to download content.\n\n"
-                        "🍪 **Setup cookies to fix this:**\n"
+                        "**Setup cookies to fix this:**\n"
                         "Use `/cookies` command for detailed instructions.\n\n"
                         "This will allow unlimited downloads without rate limits!",
                         parse_mode='Markdown'
                     )
                 else:
-                    await processing_msg.edit_text("❌ Failed to download. The reel might be private or the link is invalid.")
+                    await processing_msg.edit_text(" Failed to download. The reel might be private or the link is invalid.")
                 return
             
             video_file = result['video_file']
@@ -391,7 +411,7 @@ Use `/cookies` to setup authentication and avoid rate limits!
             
             # Send info
             info_message = f"""
-✅ **Reel Found!**
+**Reel Found!**
 
 👤 **Account:** @{username}
 ❤️ **Likes:** {likes:,}
@@ -432,15 +452,15 @@ Use `/cookies` to setup authentication and avoid rate limits!
                 await thumbnail_msg.edit_text(
                     "⚠️ **Thumbnails not available**\n\n"
                     "FFmpeg is not installed on the server.\n"
-                    "Video downloaded successfully! 🎉\n\n"
+                    "Video downloaded successfully! \n\n"
                     "ℹ️ *Thumbnails require FFmpeg for video processing*"
                 )
             
-            await update.message.reply_text("✅ Done! Enjoy your reel! 🎉")
+            await update.message.reply_text("Done! Enjoy your reel! ")
             
         except Exception as e:
             logger.error(f"Error in reel_command: {str(e)}")
-            error_message = f"❌ Error: Something went wrong. Please try again or check if the reel is public."
+            error_message = f" Error: Something went wrong. Please try again or check if the reel is public."
             try:
                 await update.message.reply_text(error_message)
             except:
@@ -460,7 +480,7 @@ Use `/cookies` to setup authentication and avoid rate limits!
     async def help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /help command"""
         help_text = """
-📖 **Help - How to Use**
+**Help - How to Use**
 
 **Basic Usage:**
 1️⃣ Copy an Instagram Reel link
@@ -471,7 +491,7 @@ Use `/cookies` to setup authentication and avoid rate limits!
 **Example:**
 `/reel https://www.instagram.com/reel/ABC123xyz/`
 
-🍪 **For Unlimited Downloads:**
+**For Unlimited Downloads:**
 Instagram rate-limits downloads. To avoid this:
 • Use `/cookies` command
 • Upload your browser cookies.txt file
@@ -502,7 +522,7 @@ Instagram rate-limits downloads. To avoid this:
             try:
                 await context.bot.send_message(
                     chat_id=update.effective_chat.id,
-                    text="❌ Sorry, something went wrong. Please try again later."
+                    text=" Sorry, something went wrong. Please try again later."
                 )
             except Exception as e:
                 logger.error(f"Could not send error message to user: {e}")
@@ -530,13 +550,13 @@ Instagram rate-limits downloads. To avoid this:
     def run(self):
         """Run the bot"""
         try:
-            logger.info("🤖 Starting Instagram Reel Downloader Bot...")
+            logger.info("Starting Instagram Reel Downloader Bot...")
             
             # Check FFmpeg availability
             if self.check_ffmpeg_installed():
-                logger.info("✅ FFmpeg found - thumbnails will be available")
+                logger.info("FFmpeg found - thumbnails will be available")
             else:
-                logger.warning("⚠️ FFmpeg not found - thumbnails will be disabled")
+                logger.warning("FFmpeg not found - thumbnails will be disabled")
             
             # Clean up old cookies on startup
             self.cleanup_old_cookies()
@@ -555,7 +575,7 @@ Instagram rate-limits downloads. To avoid this:
             # Handle document uploads (cookies.txt files)
             app.add_handler(MessageHandler(filters.Document.ALL, self.handle_document))
             
-            logger.info("✅ Bot is running and ready to download Instagram reels!")
+            logger.info("Bot is running and ready to download Instagram reels!")
             
             # Check if we're on Render (webhook mode) or local (polling mode)
             port = os.getenv('PORT')
@@ -563,7 +583,7 @@ Instagram rate-limits downloads. To avoid this:
             
             if port and webhook_url:
                 # Webhook mode for Render
-                logger.info("🌐 Running in webhook mode for production")
+                logger.info("Running in webhook mode for production")
                 flask_app = self.setup_webhook_app(app)
                 
                 # Set webhook
@@ -576,7 +596,7 @@ Instagram rate-limits downloads. To avoid this:
                 flask_app.run(host='0.0.0.0', port=int(port))
             else:
                 # Polling mode for local development
-                logger.info("🔄 Running in polling mode for development")
+                logger.info("Running in polling mode for development")
                 
                 # Run with conflict resolution
                 app.run_polling(
@@ -597,7 +617,7 @@ if __name__ == "__main__":
     BOT_TOKEN = os.getenv("BOT_TOKEN")
     
     if not BOT_TOKEN:
-        raise ValueError("❌ BOT_TOKEN environment variable not set!")
+        raise ValueError(" BOT_TOKEN environment variable not set!")
     
     bot = InstaReelBot(BOT_TOKEN)
     bot.run()
