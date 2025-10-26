@@ -602,8 +602,16 @@ Instagram rate-limits downloads. To avoid this:
                 # Webhook mode for Render
                 logger.info("🌐 Running in webhook mode for production")
                 
-                # Initialize the application
-                asyncio.get_event_loop().run_until_complete(app.initialize())
+                # Initialize the application properly
+                try:
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    loop.run_until_complete(app.initialize())
+                    loop.close()
+                    logger.info("✅ Bot application initialized successfully")
+                except Exception as e:
+                    logger.error(f"❌ Failed to initialize bot application: {e}")
+                    raise
                 
                 # Determine webhook URL (prefer WEBHOOK_URL, fallback to RENDER_EXTERNAL_URL)
                 if webhook_url:
@@ -618,12 +626,17 @@ Instagram rate-limits downloads. To avoid this:
                 if final_webhook_url:
                     try:
                         webhook_endpoint = f"{final_webhook_url}/webhook"
-                        asyncio.get_event_loop().run_until_complete(
+                        
+                        # Set webhook in a clean event loop
+                        loop = asyncio.new_event_loop()
+                        asyncio.set_event_loop(loop)
+                        loop.run_until_complete(
                             app.bot.set_webhook(
                                 url=webhook_endpoint,
                                 drop_pending_updates=True
                             )
                         )
+                        loop.close()
                         logger.info(f"✅ Webhook set to: {webhook_endpoint}")
                     except Exception as e:
                         logger.error(f"❌ Failed to set webhook: {e}")
@@ -648,21 +661,49 @@ Instagram rate-limits downloads. To avoid this:
                         update = Update.de_json(json_data, app.bot)
                         logger.info(f"Parsed update: {update}")
                         
-                        # Process update in background with proper event loop
-                        def process_update_async():
+                        # Process update synchronously to avoid event loop issues
+                        import concurrent.futures
+                        import time
+                        
+                        def process_update_sync():
                             try:
-                                # Create new event loop for this thread
+                                # Create new event loop for this execution
                                 loop = asyncio.new_event_loop()
                                 asyncio.set_event_loop(loop)
-                                loop.run_until_complete(app.process_update(update))
-                                loop.close()
+                                
+                                try:
+                                    # Run the update processing
+                                    result = loop.run_until_complete(app.process_update(update))
+                                    logger.info("✅ Update processed successfully")
+                                    return result
+                                except Exception as e:
+                                    logger.error(f"❌ Error processing update: {e}")
+                                    raise
+                                finally:
+                                    # Clean shutdown of the loop
+                                    try:
+                                        # Cancel any remaining tasks
+                                        pending = asyncio.all_tasks(loop)
+                                        if pending:
+                                            logger.info(f"Cancelling {len(pending)} pending tasks")
+                                            for task in pending:
+                                                task.cancel()
+                                            # Wait for cancelled tasks to finish
+                                            loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+                                    except Exception as cleanup_error:
+                                        logger.error(f"Error during cleanup: {cleanup_error}")
+                                    finally:
+                                        loop.close()
+                                        
                             except Exception as e:
-                                logger.error(f"Error in async update processing: {e}")
+                                logger.error(f"Error in update processing: {e}")
+                                raise
                         
-                        import threading
-                        thread = threading.Thread(target=process_update_async)
-                        thread.daemon = True  # Make thread daemon so it doesn't block shutdown
-                        thread.start()
+                        # Use ThreadPoolExecutor for better control
+                        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                            future = executor.submit(process_update_sync)
+                            # Don't wait for completion - let it run in background
+                            logger.info("Update processing started in background thread")
                         
                         return 'OK', 200
                     except Exception as e:
