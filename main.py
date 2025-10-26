@@ -64,25 +64,60 @@ class InstaReelBot:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(url, download=True)
                 
-                # Try to get the most accurate username from multiple fields
+                # Try to extract username from URL first (most reliable)
                 username = 'Unknown'
                 
-                # Try different fields in order of preference
-                for field in ['uploader_id', 'uploader', 'channel', 'creator']:
-                    if info.get(field):
-                        username = info.get(field)
-                        break
+                # Method 1: Extract from URL
+                try:
+                    # Extract username from Instagram URL patterns
+                    # URLs like: https://www.instagram.com/reel/ABC123/ or https://www.instagram.com/p/ABC123/
+                    # or https://www.instagram.com/username/reel/ABC123/
+                    url_pattern = r'instagram\.com/(?:([^/]+)/(?:reel|p)/[^/]+|reel/[^/?]+.*[\?&]taken-by=([^&]+))'
+                    match = re.search(url_pattern, url)
+                    if match:
+                        extracted_username = match.group(1) or match.group(2)
+                        if extracted_username and not extracted_username in ['reel', 'p', 'tv']:
+                            username = extracted_username
+                            logger.info(f"Username extracted from URL: {username}")
+                except Exception as e:
+                    logger.error(f"Error extracting username from URL: {e}")
                 
-                # Clean up username - ensure it starts with @ and has no spaces
+                # Method 2: Try yt-dlp fields if URL extraction failed
+                if username == 'Unknown':
+                    # Check webpage_url or original_url for username
+                    for url_field in ['webpage_url', 'original_url', 'url']:
+                        if info.get(url_field):
+                            try:
+                                match = re.search(r'instagram\.com/([^/]+)/', info[url_field])
+                                if match and match.group(1) not in ['reel', 'p', 'tv']:
+                                    username = match.group(1)
+                                    logger.info(f"Username found in {url_field}: {username}")
+                                    break
+                            except:
+                                continue
+                
+                # Method 3: Try yt-dlp metadata fields (avoid numeric IDs)
+                if username == 'Unknown':
+                    for field in ['uploader', 'channel', 'creator', 'uploader_id']:
+                        field_value = info.get(field)
+                        if field_value and not field_value.isdigit() and len(field_value) > 2:
+                            username = field_value
+                            logger.info(f"Username from {field}: {username}")
+                            break
+                
+                # Clean up username
                 if username != 'Unknown':
-                    # Remove @ if it already exists to avoid double @@
+                    # Remove @ if it already exists
                     username = username.lstrip('@')
-                    # Replace spaces with underscores to maintain Instagram format
+                    # Replace spaces with underscores
                     username = username.replace(' ', '_')
-                    # Ensure it doesn't have any other problematic characters
+                    # Remove invalid characters but keep letters, numbers, dots, underscores
                     username = re.sub(r'[^a-zA-Z0-9._]', '', username)
+                    # Make sure it's not empty after cleaning
+                    if not username:
+                        username = 'Unknown'
                 
-                logger.info(f"Extracted username: {username} from fields: {[info.get(f) for f in ['uploader_id', 'uploader', 'channel', 'creator']]}")
+                logger.info(f"Final username: {username}")
                 
                 return {
                     'video_file': f"{info['id']}.{info['ext']}",
@@ -527,25 +562,6 @@ Instagram rate-limits downloads. To avoid this:
             except Exception as e:
                 logger.error(f"Could not send error message to user: {e}")
     
-    def setup_webhook_app(self, app):
-        """Setup Flask app for webhook"""
-        flask_app = Flask(__name__)
-        
-        @flask_app.route('/webhook', methods=['POST'])
-        def webhook():
-            try:
-                update = Update.de_json(request.get_json(force=True), app.bot)
-                asyncio.create_task(app.process_update(update))
-                return 'OK'
-            except Exception as e:
-                logger.error(f"Error processing webhook: {e}")
-                return 'Error', 500
-        
-        @flask_app.route('/health', methods=['GET'])
-        def health():
-            return 'OK'
-        
-        return flask_app
 
     def run(self):
         """Run the bot"""
@@ -581,19 +597,60 @@ Instagram rate-limits downloads. To avoid this:
             port = os.getenv('PORT')
             webhook_url = os.getenv('WEBHOOK_URL')
             
-            if port and webhook_url:
+            if port:
                 # Webhook mode for Render
-                logger.info("Running in webhook mode for production")
-                flask_app = self.setup_webhook_app(app)
+                logger.info("🌐 Running in webhook mode for production")
                 
-                # Set webhook
-                asyncio.run(app.bot.set_webhook(
-                    url=f"{webhook_url}/webhook",
-                    drop_pending_updates=True
-                ))
+                # Initialize the application
+                asyncio.get_event_loop().run_until_complete(app.initialize())
+                
+                # Set up webhook if URL is provided
+                if webhook_url:
+                    try:
+                        asyncio.get_event_loop().run_until_complete(
+                            app.bot.set_webhook(
+                                url=f"{webhook_url}/webhook",
+                                drop_pending_updates=True
+                            )
+                        )
+                        logger.info(f"✅ Webhook set to: {webhook_url}/webhook")
+                    except Exception as e:
+                        logger.error(f"Failed to set webhook: {e}")
+                
+                # Create Flask app for webhook handling
+                flask_app = Flask(__name__)
+                
+                @flask_app.route('/webhook', methods=['POST'])
+                def webhook():
+                    try:
+                        json_data = request.get_json(force=True)
+                        update = Update.de_json(json_data, app.bot)
+                        
+                        # Process update in background
+                        def process_update_async():
+                            asyncio.get_event_loop().run_until_complete(app.process_update(update))
+                        
+                        import threading
+                        thread = threading.Thread(target=process_update_async)
+                        thread.start()
+                        
+                        return 'OK', 200
+                    except Exception as e:
+                        logger.error(f"Error processing webhook: {e}")
+                        return 'Error', 500
+                
+                @flask_app.route('/health', methods=['GET'])
+                def health():
+                    logger.info("Health check requested")
+                    return 'Bot is running!', 200
+                
+                @flask_app.route('/', methods=['GET'])
+                def root():
+                    return 'Instagram Reel Downloader Bot is running!', 200
                 
                 # Start Flask app
-                flask_app.run(host='0.0.0.0', port=int(port))
+                logger.info(f"🚀 Starting Flask server on port {port}")
+                flask_app.run(host='0.0.0.0', port=int(port), debug=False, use_reloader=False)
             else:
                 # Polling mode for local development
                 logger.info("Running in polling mode for development")
