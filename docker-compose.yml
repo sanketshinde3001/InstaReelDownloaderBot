@@ -1,0 +1,25 @@
+version: '3.8'
+
+services:
+  insta-bot:
+    build: .
+    container_name: insta-reel-downloader-bot
+    environment:
+      # Replace with your actual bot token for testing
+      - BOT_TOKEN=${BOT_TOKEN}
+    volumes:
+      # Mount a volume for persistent cookie storage during development
+      - bot_cookies:/tmp/bot_files
+    ports:
+      - "8080:8080"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import sys; sys.exit(0)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+volumes:
+  bot_cookies:
+    driver: local

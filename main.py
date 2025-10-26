@@ -4,8 +4,11 @@ import random
 import subprocess
 import logging
 import json
-from telegram import Update, InputMediaPhoto
-from telegram.ext import Application, CommandHandler, ContextTypes
+import tempfile
+import re
+import time
+from telegram import Update, InputMediaPhoto, Document
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 import yt_dlp
 
 load_dotenv()
@@ -21,9 +24,24 @@ logger = logging.getLogger(__name__)
 class InstaReelBot:
     def __init__(self, bot_token):
         self.bot_token = bot_token
+        self.user_cookies = {}  # Store cookies per user ID
         
-    def download_reel(self, url):
-        """Download Instagram reel using yt-dlp"""
+    def cleanup_old_cookies(self):
+        """Clean up temporary cookie files"""
+        try:
+            for user_id, cookie_file in list(self.user_cookies.items()):
+                if os.path.exists(cookie_file):
+                    # Check if file is older than 24 hours
+                    file_age = os.path.getmtime(cookie_file)
+                    if (time.time() - file_age) > 86400:  # 24 hours
+                        os.remove(cookie_file)
+                        del self.user_cookies[user_id]
+                        logger.info(f"Cleaned up old cookies for user {user_id}")
+        except Exception as e:
+            logger.error(f"Error cleaning up cookies: {str(e)}")
+        
+    def download_reel(self, url, user_id=None):
+        """Download Instagram reel using yt-dlp with user cookies"""
         try:
             ydl_opts = {
                 'format': 'best',
@@ -32,6 +50,13 @@ class InstaReelBot:
                 'no_warnings': True,
                 'extract_flat': False,
             }
+            
+            # Add cookies if user has provided them
+            if user_id and user_id in self.user_cookies:
+                cookies_file = self.user_cookies[user_id]
+                if os.path.exists(cookies_file):
+                    ydl_opts['cookiefile'] = cookies_file
+                    logger.info(f"Using cookies for user {user_id}")
             
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(url, download=True)
@@ -47,9 +72,22 @@ class InstaReelBot:
             logger.error(f"Download error: {str(e)}")
             return None
     
+    def check_ffmpeg_installed(self):
+        """Check if FFmpeg is available"""
+        try:
+            result = subprocess.run(['ffmpeg', '-version'], capture_output=True, timeout=5)
+            return result.returncode == 0
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            return False
+    
     def generate_thumbnails(self, video_file, shortcode):
         """Generate 5 random thumbnails from video"""
         thumbnails = []
+        
+        # Check if FFmpeg is available
+        if not self.check_ffmpeg_installed():
+            logger.warning("FFmpeg not found - skipping thumbnail generation")
+            return []
         
         try:
             # Get video duration
@@ -62,12 +100,13 @@ class InstaReelBot:
             )
             
             if result.returncode != 0:
-                logger.error("FFprobe failed")
+                logger.error("FFprobe failed - video duration check failed")
                 return []
                 
             duration = float(result.stdout.strip())
             
             if duration < 2:
+                logger.info("Video too short for thumbnails")
                 return []
             
             # Generate 5 random timestamps
@@ -87,11 +126,164 @@ class InstaReelBot:
                 
                 if result.returncode == 0 and os.path.exists(thumbnail_file):
                     thumbnails.append(thumbnail_file)
+                    logger.info(f"Generated thumbnail {i}/{num_thumbs}")
             
+        except FileNotFoundError:
+            logger.error("FFmpeg not found in system PATH - install FFmpeg to enable thumbnails")
+        except subprocess.TimeoutExpired:
+            logger.error("FFmpeg timeout - thumbnail generation took too long")
         except Exception as e:
-            logger.error(f"Thumbnail error: {str(e)}")
+            logger.error(f"Thumbnail generation error: {str(e)}")
         
         return thumbnails
+    
+    def validate_cookies(self, cookies_content):
+        """Validate cookies.txt format"""
+        try:
+            lines = cookies_content.strip().split('\n')
+            valid_lines = 0
+            
+            for line in lines:
+                line = line.strip()
+                # Skip empty lines and comments
+                if not line or line.startswith('#'):
+                    continue
+                    
+                # Netscape cookies format: domain, flag, path, secure, expiration, name, value
+                parts = line.split('\t')
+                if len(parts) >= 7:
+                    # Check if it contains instagram.com
+                    if 'instagram.com' in parts[0] or '.instagram.com' in parts[0]:
+                        valid_lines += 1
+                        
+            return valid_lines > 0
+            
+        except Exception as e:
+            logger.error(f"Cookie validation error: {str(e)}")
+            return False
+    
+    def save_user_cookies(self, user_id, cookies_content):
+        """Save cookies to a temporary file for the user"""
+        try:
+            # Create a temporary file for this user's cookies
+            temp_file = tempfile.NamedTemporaryFile(mode='w', delete=False, suffix=f'_cookies_{user_id}.txt')
+            temp_file.write(cookies_content)
+            temp_file.close()
+            
+            # Store the file path
+            self.user_cookies[user_id] = temp_file.name
+            logger.info(f"Saved cookies for user {user_id}")
+            
+            return temp_file.name
+            
+        except Exception as e:
+            logger.error(f"Error saving cookies: {str(e)}")
+            return None
+    
+    async def cookies_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /cookies command"""
+        help_text = """
+🍪 **Cookie Authentication Setup**
+
+To bypass Instagram rate limits, you need to provide your browser cookies:
+
+**How to get cookies.txt:**
+
+1️⃣ **Chrome/Edge:**
+   • Install "Get cookies.txt LOCALLY" extension
+   • Go to instagram.com and login
+   • Click the extension → Export → instagram.com
+   • Save as `cookies.txt`
+
+2️⃣ **Firefox:**
+   • Install "cookies.txt" add-on
+   • Visit instagram.com (logged in)
+   • Click add-on → Export cookies.txt
+
+3️⃣ **Manual Method:**
+   • Open Developer Tools (F12)
+   • Go to Application/Storage → Cookies → instagram.com
+   • Copy all cookie data
+
+**Then send the cookies.txt file to this chat!**
+
+⚠️ **Important:** Only share cookies with trusted bots. Cookies contain login information.
+
+📤 **Send your cookies.txt file now, or use /start to go back**
+"""
+        await update.message.reply_text(help_text, parse_mode='Markdown')
+    
+    async def handle_document(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle uploaded documents (cookies.txt files)"""
+        try:
+            document = update.message.document
+            user_id = update.message.from_user.id
+            
+            # Check if it's likely a cookies file
+            if document.file_name and ('cookie' in document.file_name.lower() or document.file_name.endswith('.txt')):
+                
+                processing_msg = await update.message.reply_text("🍪 Processing your cookies file...")
+                
+                # Download the file
+                file = await context.bot.get_file(document.file_id)
+                file_content = await file.download_as_bytearray()
+                cookies_text = file_content.decode('utf-8')
+                
+                # Validate cookies
+                if self.validate_cookies(cookies_text):
+                    # Save cookies for this user
+                    cookies_file = self.save_user_cookies(user_id, cookies_text)
+                    
+                    if cookies_file:
+                        await processing_msg.edit_text(
+                            "✅ **Cookies successfully uploaded and validated!**\n\n"
+                            "🎉 Your Instagram downloads should now work without rate limits!\n"
+                            "🔒 Cookies are stored securely and only used for your downloads.\n\n"
+                            "Try downloading a reel now: `/reel [instagram_url]`",
+                            parse_mode='Markdown'
+                        )
+                    else:
+                        await processing_msg.edit_text("❌ Error saving cookies. Please try again.")
+                else:
+                    await processing_msg.edit_text(
+                        "❌ **Invalid cookies file!**\n\n"
+                        "Please make sure:\n"
+                        "• File contains Instagram cookies\n"
+                        "• You're logged into Instagram when exporting\n"
+                        "• Using Netscape cookies.txt format\n\n"
+                        "Use `/cookies` for detailed instructions."
+                    )
+            else:
+                await update.message.reply_text(
+                    "📄 Please send a cookies.txt file.\n"
+                    "Use `/cookies` for instructions on how to get your cookies."
+                )
+                
+        except Exception as e:
+            logger.error(f"Error handling document: {str(e)}")
+            await update.message.reply_text(
+                "❌ Error processing file. Please make sure it's a valid text file and try again."
+            )
+    
+    async def cookie_status_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Check cookie status for user"""
+        user_id = update.message.from_user.id
+        
+        if user_id in self.user_cookies and os.path.exists(self.user_cookies[user_id]):
+            await update.message.reply_text(
+                "✅ **Cookies Active**\n\n"
+                "🍪 Your authentication cookies are loaded and working.\n"
+                "🚀 You can download Instagram content without rate limits!\n\n"
+                "To update cookies, just send a new cookies.txt file.",
+                parse_mode='Markdown'
+            )
+        else:
+            await update.message.reply_text(
+                "❌ **No Cookies Found**\n\n"
+                "You haven't uploaded authentication cookies yet.\n\n"
+                "🍪 Use `/cookies` to setup authentication and avoid rate limits.",
+                parse_mode='Markdown'
+            )
     
     async def start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /start command"""
@@ -103,10 +295,18 @@ Send me an Instagram Reel link:
 `/reel https://www.instagram.com/reel/xxxxx/`
 
 ✨ **I will send you:**
-• Account username
+• Account username  
 • Full caption
 • High quality video
 • 5 random thumbnails
+
+🍪 **Important for unlimited downloads:**
+Use `/cookies` to setup authentication and avoid rate limits!
+
+📋 **Commands:**
+• `/reel [url]` - Download Instagram reel
+• `/cookies` - Setup authentication cookies
+• `/help` - Show detailed help
 
 🚀 **Ready to download!**
 """
@@ -135,10 +335,22 @@ Send me an Instagram Reel link:
             processing_msg = await update.message.reply_text("⏳ Processing your reel... This may take a moment.")
             
             # Download reel
-            result = self.download_reel(url)
+            user_id = update.message.from_user.id
+            result = self.download_reel(url, user_id)
             
             if not result:
-                await processing_msg.edit_text("❌ Failed to download. The reel might be private or the link is invalid.")
+                # Check if user has cookies
+                if user_id not in self.user_cookies:
+                    await processing_msg.edit_text(
+                        "❌ **Download Failed - Authentication Required**\n\n"
+                        "Instagram requires login cookies to download content.\n\n"
+                        "🍪 **Setup cookies to fix this:**\n"
+                        "Use `/cookies` command for detailed instructions.\n\n"
+                        "This will allow unlimited downloads without rate limits!",
+                        parse_mode='Markdown'
+                    )
+                else:
+                    await processing_msg.edit_text("❌ Failed to download. The reel might be private or the link is invalid.")
                 return
             
             video_file = result['video_file']
@@ -172,7 +384,7 @@ Send me an Instagram Reel link:
                     )
             
             # Generate thumbnails
-            await update.message.reply_text("🖼️ Generating thumbnails...")
+            thumbnail_msg = await update.message.reply_text("🖼️ Generating thumbnails...")
             thumbnails = self.generate_thumbnails(video_file, shortcode)
             
             if thumbnails:
@@ -184,9 +396,15 @@ Send me an Instagram Reel link:
                             caption=f"📸 Thumbnail {i}/{len(thumbnails)}" if i == 1 else ""
                         ))
                 
+                await thumbnail_msg.delete()  # Remove the "generating" message
                 await update.message.reply_media_group(media=media_group)
             else:
-                await update.message.reply_text("⚠️ Could not generate thumbnails, but video sent successfully!")
+                await thumbnail_msg.edit_text(
+                    "⚠️ **Thumbnails not available**\n\n"
+                    "FFmpeg is not installed on the server.\n"
+                    "Video downloaded successfully! 🎉\n\n"
+                    "ℹ️ *Thumbnails require FFmpeg for video processing*"
+                )
             
             await update.message.reply_text("✅ Done! Enjoy your reel! 🎉")
             
@@ -214,6 +432,7 @@ Send me an Instagram Reel link:
         help_text = """
 📖 **Help - How to Use**
 
+**Basic Usage:**
 1️⃣ Copy an Instagram Reel link
 2️⃣ Send: `/reel [paste link here]`
 3️⃣ Wait for processing (10-30 seconds)
@@ -222,26 +441,53 @@ Send me an Instagram Reel link:
 **Example:**
 `/reel https://www.instagram.com/reel/ABC123xyz/`
 
-**Note:** Only public reels can be downloaded.
+🍪 **For Unlimited Downloads:**
+Instagram rate-limits downloads. To avoid this:
+• Use `/cookies` command
+• Upload your browser cookies.txt file
+• Enjoy unlimited, faster downloads!
+
+**Commands:**
+• `/start` - Welcome message
+• `/reel [url]` - Download reel/post
+• `/cookies` - Setup authentication
+• `/cookiestatus` - Check cookie status
+• `/help` - This help message
 
 **Supported formats:**
 • /reel/xxxxx/
 • /p/xxxxx/
 • Short links (instagr.am)
+
+**Note:** Public reels work best. Private content requires cookies.
 """
         await update.message.reply_text(help_text, parse_mode='Markdown')
     
     def run(self):
         """Run the bot"""
-        logger.info("🤖 Starting Telegram Bot...")
+        logger.info("🤖 Starting Instagram Reel Downloader Bot...")
+        
+        # Check FFmpeg availability
+        if self.check_ffmpeg_installed():
+            logger.info("✅ FFmpeg found - thumbnails will be available")
+        else:
+            logger.warning("⚠️ FFmpeg not found - thumbnails will be disabled")
+        
+        # Clean up old cookies on startup
+        self.cleanup_old_cookies()
         
         app = Application.builder().token(self.bot_token).build()
         
         app.add_handler(CommandHandler("start", self.start_command))
         app.add_handler(CommandHandler("reel", self.reel_command))
+        app.add_handler(CommandHandler("cookies", self.cookies_command))
+        app.add_handler(CommandHandler("cookiestatus", self.cookie_status_command))
         app.add_handler(CommandHandler("help", self.help_command))
         
-        logger.info("✅ Bot is running!")
+        # Handle document uploads (cookies.txt files)
+        app.add_handler(MessageHandler(filters.Document.ALL, self.handle_document))
+        
+        logger.info("✅ Bot is running and ready to download Instagram reels!")
         
         app.run_polling(allowed_updates=Update.ALL_TYPES)
 

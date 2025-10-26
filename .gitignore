@@ -1,0 +1,48 @@
+# Environment variables and secrets
+.env
+.env.local
+.env.production
+
+# Virtual environment
+venv/
+env/
+.venv/
+
+# Python cache files
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyc
+
+# Logs
+*.log
+logs/
+
+# Downloaded media files (temporary)
+downloads/
+temp/
+*.mp4
+*.jpg
+*.jpeg
+*.png
+*.gif
+
+# Cookie files and session data
+cookies/
+*.cookies
+session_*
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS generated files
+.DS_Store
+Thumbs.db
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
