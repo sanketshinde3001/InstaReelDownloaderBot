@@ -596,6 +596,7 @@ Instagram rate-limits downloads. To avoid this:
             # Check if we're on Render (webhook mode) or local (polling mode)
             port = os.getenv('PORT')
             webhook_url = os.getenv('WEBHOOK_URL')
+            render_service_url = os.getenv('RENDER_EXTERNAL_URL')  # Render sets this automatically
             
             if port:
                 # Webhook mode for Render
@@ -604,18 +605,36 @@ Instagram rate-limits downloads. To avoid this:
                 # Initialize the application
                 asyncio.get_event_loop().run_until_complete(app.initialize())
                 
-                # Set up webhook if URL is provided
+                # Determine webhook URL (prefer WEBHOOK_URL, fallback to RENDER_EXTERNAL_URL)
                 if webhook_url:
+                    final_webhook_url = webhook_url
+                elif render_service_url:
+                    final_webhook_url = render_service_url
+                else:
+                    logger.error("❌ No webhook URL found! Set WEBHOOK_URL environment variable")
+                    final_webhook_url = None
+                
+                # Set up webhook
+                if final_webhook_url:
                     try:
+                        webhook_endpoint = f"{final_webhook_url}/webhook"
                         asyncio.get_event_loop().run_until_complete(
                             app.bot.set_webhook(
-                                url=f"{webhook_url}/webhook",
+                                url=webhook_endpoint,
                                 drop_pending_updates=True
                             )
                         )
-                        logger.info(f"✅ Webhook set to: {webhook_url}/webhook")
+                        logger.info(f"✅ Webhook set to: {webhook_endpoint}")
                     except Exception as e:
-                        logger.error(f"Failed to set webhook: {e}")
+                        logger.error(f"❌ Failed to set webhook: {e}")
+                        logger.info("🔄 Falling back to polling mode")
+                        # Fall back to polling if webhook fails
+                        app.run_polling(
+                            allowed_updates=Update.ALL_TYPES,
+                            drop_pending_updates=True,
+                            timeout=30
+                        )
+                        return
                 
                 # Create Flask app for webhook handling
                 flask_app = Flask(__name__)
@@ -624,14 +643,25 @@ Instagram rate-limits downloads. To avoid this:
                 def webhook():
                     try:
                         json_data = request.get_json(force=True)
-                        update = Update.de_json(json_data, app.bot)
+                        logger.info(f"Received webhook data: {json_data}")
                         
-                        # Process update in background
+                        update = Update.de_json(json_data, app.bot)
+                        logger.info(f"Parsed update: {update}")
+                        
+                        # Process update in background with proper event loop
                         def process_update_async():
-                            asyncio.get_event_loop().run_until_complete(app.process_update(update))
+                            try:
+                                # Create new event loop for this thread
+                                loop = asyncio.new_event_loop()
+                                asyncio.set_event_loop(loop)
+                                loop.run_until_complete(app.process_update(update))
+                                loop.close()
+                            except Exception as e:
+                                logger.error(f"Error in async update processing: {e}")
                         
                         import threading
                         thread = threading.Thread(target=process_update_async)
+                        thread.daemon = True  # Make thread daemon so it doesn't block shutdown
                         thread.start()
                         
                         return 'OK', 200
