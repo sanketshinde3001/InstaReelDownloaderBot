@@ -11,8 +11,15 @@ RUN apt-get update && apt-get install -y \
     wget \
     && rm -rf /var/lib/apt/lists/* \
     && apt-get clean \
+    && echo "=== FFmpeg Installation Check ===" \
     && ffmpeg -version \
-    && ffprobe -version
+    && echo "=== FFprobe Installation Check ===" \
+    && ffprobe -version \
+    && echo "=== FFmpeg Location ===" \
+    && which ffmpeg \
+    && which ffprobe \
+    && echo "=== PATH ===" \
+    && echo $PATH
 
 # Copy requirements first for better Docker layer caching
 COPY requirements.txt .

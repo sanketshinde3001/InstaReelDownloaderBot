@@ -10,6 +10,9 @@ import time
 from telegram import Update, InputMediaPhoto, Document
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 import yt_dlp
+from flask import Flask, request
+import asyncio
+import threading
 
 load_dotenv()
 
@@ -75,9 +78,36 @@ class InstaReelBot:
     def check_ffmpeg_installed(self):
         """Check if FFmpeg is available"""
         try:
-            result = subprocess.run(['ffmpeg', '-version'], capture_output=True, timeout=5)
-            return result.returncode == 0
-        except (FileNotFoundError, subprocess.TimeoutExpired):
+            # Check FFmpeg
+            result = subprocess.run(['ffmpeg', '-version'], capture_output=True, timeout=5, text=True)
+            if result.returncode == 0:
+                logger.info("FFmpeg check successful")
+                # Also check ffprobe
+                probe_result = subprocess.run(['ffprobe', '-version'], capture_output=True, timeout=5, text=True)
+                if probe_result.returncode == 0:
+                    logger.info("FFprobe check successful")
+                    return True
+                else:
+                    logger.error("FFprobe not found")
+                    return False
+            else:
+                logger.error(f"FFmpeg check failed with return code: {result.returncode}")
+                logger.error(f"FFmpeg stderr: {result.stderr}")
+                return False
+        except FileNotFoundError as e:
+            logger.error(f"FFmpeg not found in PATH: {e}")
+            # Try to find ffmpeg in common locations
+            common_paths = ['/usr/bin/ffmpeg', '/usr/local/bin/ffmpeg', '/opt/ffmpeg/bin/ffmpeg']
+            for path in common_paths:
+                if os.path.exists(path):
+                    logger.info(f"Found FFmpeg at: {path}")
+                    return True
+            return False
+        except subprocess.TimeoutExpired:
+            logger.error("FFmpeg version check timed out")
+            return False
+        except Exception as e:
+            logger.error(f"Unexpected error checking FFmpeg: {e}")
             return False
     
     def generate_thumbnails(self, video_file, shortcode):
@@ -463,33 +493,104 @@ Instagram rate-limits downloads. To avoid this:
 """
         await update.message.reply_text(help_text, parse_mode='Markdown')
     
+    async def error_handler(self, update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Log the error and send a message to the user if possible"""
+        logger.error(f"Exception while handling an update: {context.error}")
+        
+        # Try to send error message to user if update has message
+        if update and hasattr(update, 'effective_chat') and update.effective_chat:
+            try:
+                await context.bot.send_message(
+                    chat_id=update.effective_chat.id,
+                    text="❌ Sorry, something went wrong. Please try again later."
+                )
+            except Exception as e:
+                logger.error(f"Could not send error message to user: {e}")
+    
+    def setup_webhook_app(self, app):
+        """Setup Flask app for webhook"""
+        flask_app = Flask(__name__)
+        
+        @flask_app.route('/webhook', methods=['POST'])
+        def webhook():
+            try:
+                update = Update.de_json(request.get_json(force=True), app.bot)
+                asyncio.create_task(app.process_update(update))
+                return 'OK'
+            except Exception as e:
+                logger.error(f"Error processing webhook: {e}")
+                return 'Error', 500
+        
+        @flask_app.route('/health', methods=['GET'])
+        def health():
+            return 'OK'
+        
+        return flask_app
+
     def run(self):
         """Run the bot"""
-        logger.info("🤖 Starting Instagram Reel Downloader Bot...")
-        
-        # Check FFmpeg availability
-        if self.check_ffmpeg_installed():
-            logger.info("✅ FFmpeg found - thumbnails will be available")
-        else:
-            logger.warning("⚠️ FFmpeg not found - thumbnails will be disabled")
-        
-        # Clean up old cookies on startup
-        self.cleanup_old_cookies()
-        
-        app = Application.builder().token(self.bot_token).build()
-        
-        app.add_handler(CommandHandler("start", self.start_command))
-        app.add_handler(CommandHandler("reel", self.reel_command))
-        app.add_handler(CommandHandler("cookies", self.cookies_command))
-        app.add_handler(CommandHandler("cookiestatus", self.cookie_status_command))
-        app.add_handler(CommandHandler("help", self.help_command))
-        
-        # Handle document uploads (cookies.txt files)
-        app.add_handler(MessageHandler(filters.Document.ALL, self.handle_document))
-        
-        logger.info("✅ Bot is running and ready to download Instagram reels!")
-        
-        app.run_polling(allowed_updates=Update.ALL_TYPES)
+        try:
+            logger.info("🤖 Starting Instagram Reel Downloader Bot...")
+            
+            # Check FFmpeg availability
+            if self.check_ffmpeg_installed():
+                logger.info("✅ FFmpeg found - thumbnails will be available")
+            else:
+                logger.warning("⚠️ FFmpeg not found - thumbnails will be disabled")
+            
+            # Clean up old cookies on startup
+            self.cleanup_old_cookies()
+            
+            app = Application.builder().token(self.bot_token).build()
+            
+            # Add error handler
+            app.add_error_handler(self.error_handler)
+            
+            app.add_handler(CommandHandler("start", self.start_command))
+            app.add_handler(CommandHandler("reel", self.reel_command))
+            app.add_handler(CommandHandler("cookies", self.cookies_command))
+            app.add_handler(CommandHandler("cookiestatus", self.cookie_status_command))
+            app.add_handler(CommandHandler("help", self.help_command))
+            
+            # Handle document uploads (cookies.txt files)
+            app.add_handler(MessageHandler(filters.Document.ALL, self.handle_document))
+            
+            logger.info("✅ Bot is running and ready to download Instagram reels!")
+            
+            # Check if we're on Render (webhook mode) or local (polling mode)
+            port = os.getenv('PORT')
+            webhook_url = os.getenv('WEBHOOK_URL')
+            
+            if port and webhook_url:
+                # Webhook mode for Render
+                logger.info("🌐 Running in webhook mode for production")
+                flask_app = self.setup_webhook_app(app)
+                
+                # Set webhook
+                asyncio.run(app.bot.set_webhook(
+                    url=f"{webhook_url}/webhook",
+                    drop_pending_updates=True
+                ))
+                
+                # Start Flask app
+                flask_app.run(host='0.0.0.0', port=int(port))
+            else:
+                # Polling mode for local development
+                logger.info("🔄 Running in polling mode for development")
+                
+                # Run with conflict resolution
+                app.run_polling(
+                    allowed_updates=Update.ALL_TYPES,
+                    drop_pending_updates=True,  # Clear any pending updates
+                    timeout=30,
+                    read_timeout=30,
+                    write_timeout=30,
+                    connect_timeout=30
+                )
+            
+        except Exception as e:
+            logger.error(f"Failed to start bot: {e}")
+            raise
 
 
 if __name__ == "__main__":
