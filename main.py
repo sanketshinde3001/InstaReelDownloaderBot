@@ -38,7 +38,7 @@ class InstaReelBot:
                         del self.user_cookies[user_id]
                         logger.info(f"Cleaned up old cookies for user {user_id}")
         except Exception as e:
-                            logger.error(f"Error during cleanup: {cleanup_error}")
+            logger.error(f"Error cleaning up cookies: {str(e)}")
         
     def download_reel(self, url, user_id=None):
         """Download Instagram reel using yt-dlp with user cookies"""
