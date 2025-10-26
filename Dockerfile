@@ -6,7 +6,6 @@ WORKDIR /app
 # Install system dependencies including FFmpeg and tools needed for Render
 RUN apt-get update && apt-get install -y \
     ffmpeg \
-    ffprobe \
     curl \
     ca-certificates \
     wget \
