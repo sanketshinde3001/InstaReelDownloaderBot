@@ -10,9 +10,6 @@ import time
 from telegram import Update, InputMediaPhoto, Document
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 import yt_dlp
-from flask import Flask, request
-import asyncio
-import threading
 
 load_dotenv()
 
@@ -41,7 +38,7 @@ class InstaReelBot:
                         del self.user_cookies[user_id]
                         logger.info(f"Cleaned up old cookies for user {user_id}")
         except Exception as e:
-            logger.error(f"Error cleaning up cookies: {str(e)}")
+                            logger.error(f"Error during cleanup: {cleanup_error}")
         
     def download_reel(self, url, user_id=None):
         """Download Instagram reel using yt-dlp with user cookies"""
@@ -595,133 +592,29 @@ Instagram rate-limits downloads. To avoid this:
             
             # Check if we're on Render (webhook mode) or local (polling mode)
             port = os.getenv('PORT')
-            webhook_url = os.getenv('WEBHOOK_URL')
-            render_service_url = os.getenv('RENDER_EXTERNAL_URL')  # Render sets this automatically
             
-            if port:
-                # Webhook mode for Render
+            # Auto-detect webhook URL from Render environment
+            render_service_name = os.getenv('RENDER_SERVICE_NAME')
+            webhook_url = os.getenv('WEBHOOK_URL')
+            
+            if not webhook_url and render_service_name:
+                # Auto-generate webhook URL for Render
+                webhook_url = f"https://{render_service_name}.onrender.com"
+                logger.info(f"🔍 Auto-detected webhook URL: {webhook_url}")
+            
+            if port and webhook_url:
+                # Webhook mode for production (Render)
                 logger.info("🌐 Running in webhook mode for production")
                 
-                # Initialize the application properly
-                try:
-                    loop = asyncio.new_event_loop()
-                    asyncio.set_event_loop(loop)
-                    loop.run_until_complete(app.initialize())
-                    loop.close()
-                    logger.info("✅ Bot application initialized successfully")
-                except Exception as e:
-                    logger.error(f"❌ Failed to initialize bot application: {e}")
-                    raise
-                
-                # Determine webhook URL (prefer WEBHOOK_URL, fallback to RENDER_EXTERNAL_URL)
-                if webhook_url:
-                    final_webhook_url = webhook_url
-                elif render_service_url:
-                    final_webhook_url = render_service_url
-                else:
-                    logger.error("❌ No webhook URL found! Set WEBHOOK_URL environment variable")
-                    final_webhook_url = None
-                
-                # Set up webhook
-                if final_webhook_url:
-                    try:
-                        webhook_endpoint = f"{final_webhook_url}/webhook"
-                        
-                        # Set webhook in a clean event loop
-                        loop = asyncio.new_event_loop()
-                        asyncio.set_event_loop(loop)
-                        loop.run_until_complete(
-                            app.bot.set_webhook(
-                                url=webhook_endpoint,
-                                drop_pending_updates=True
-                            )
-                        )
-                        loop.close()
-                        logger.info(f"✅ Webhook set to: {webhook_endpoint}")
-                    except Exception as e:
-                        logger.error(f"❌ Failed to set webhook: {e}")
-                        logger.info("🔄 Falling back to polling mode")
-                        # Fall back to polling if webhook fails
-                        app.run_polling(
-                            allowed_updates=Update.ALL_TYPES,
-                            drop_pending_updates=True,
-                            timeout=30
-                        )
-                        return
-                
-                # Create Flask app for webhook handling
-                flask_app = Flask(__name__)
-                
-                @flask_app.route('/webhook', methods=['POST'])
-                def webhook():
-                    try:
-                        json_data = request.get_json(force=True)
-                        logger.info(f"Received webhook data: {json_data}")
-                        
-                        update = Update.de_json(json_data, app.bot)
-                        logger.info(f"Parsed update: {update}")
-                        
-                        # Process update synchronously to avoid event loop issues
-                        import concurrent.futures
-                        import time
-                        
-                        def process_update_sync():
-                            try:
-                                # Create new event loop for this execution
-                                loop = asyncio.new_event_loop()
-                                asyncio.set_event_loop(loop)
-                                
-                                try:
-                                    # Run the update processing
-                                    result = loop.run_until_complete(app.process_update(update))
-                                    logger.info("✅ Update processed successfully")
-                                    return result
-                                except Exception as e:
-                                    logger.error(f"❌ Error processing update: {e}")
-                                    raise
-                                finally:
-                                    # Clean shutdown of the loop
-                                    try:
-                                        # Cancel any remaining tasks
-                                        pending = asyncio.all_tasks(loop)
-                                        if pending:
-                                            logger.info(f"Cancelling {len(pending)} pending tasks")
-                                            for task in pending:
-                                                task.cancel()
-                                            # Wait for cancelled tasks to finish
-                                            loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
-                                    except Exception as cleanup_error:
-                                        logger.error(f"Error during cleanup: {cleanup_error}")
-                                    finally:
-                                        loop.close()
-                                        
-                            except Exception as e:
-                                logger.error(f"Error in update processing: {e}")
-                                raise
-                        
-                        # Use ThreadPoolExecutor for better control
-                        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-                            future = executor.submit(process_update_sync)
-                            # Don't wait for completion - let it run in background
-                            logger.info("Update processing started in background thread")
-                        
-                        return 'OK', 200
-                    except Exception as e:
-                        logger.error(f"Error processing webhook: {e}")
-                        return 'Error', 500
-                
-                @flask_app.route('/health', methods=['GET'])
-                def health():
-                    logger.info("Health check requested")
-                    return 'Bot is running!', 200
-                
-                @flask_app.route('/', methods=['GET'])
-                def root():
-                    return 'Instagram Reel Downloader Bot is running!', 200
-                
-                # Start Flask app
-                logger.info(f"🚀 Starting Flask server on port {port}")
-                flask_app.run(host='0.0.0.0', port=int(port), debug=False, use_reloader=False)
+                # Use telegram-bot's native webhook server - NO FLASK!
+                app.run_webhook(
+                    listen="0.0.0.0",
+                    port=int(port),
+                    url_path="/webhook",
+                    webhook_url=f"{webhook_url}/webhook",
+                    drop_pending_updates=True,
+                    allowed_updates=Update.ALL_TYPES
+                )
             else:
                 # Polling mode for local development
                 logger.info("Running in polling mode for development")
